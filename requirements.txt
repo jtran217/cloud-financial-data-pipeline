@@ -1,0 +1,5 @@
+pandas
+python-dotenv
+yfinance
+google-cloud-storage
+google-cloud-bigquery
