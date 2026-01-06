@@ -1,45 +1,65 @@
-import pandas as pd
 import os
+import io
+import pandas as pd
+from dotenv import load_dotenv
+from google.cloud import storage
 
-# Using mock internal transaction data
-transactions = pd.read_csv('data/raw/internal/transactions.csv')
-transactions['transaction_date'] = pd.to_datetime(transactions['transaction_date'])
+load_dotenv()
+BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
-# Pull from data lake
-raw_data_dir = "data/raw/market"
-tickers = ["AAPL", "MSFT", "GOOG", "AMZN", "SPY"]
+if not BUCKET_NAME or not PROJECT_ID:
+    raise ValueError("Please set GCS_BUCKET_NAME and GCP_PROJECT_ID in your .env")
 
+storage_client = storage.Client(project=PROJECT_ID)
+bucket = storage_client.bucket(BUCKET_NAME)
 
-dfs = []
-for ticker in tickers:
-    file_path = os.path.join(raw_data_dir, f"{ticker}.csv")
-    df = pd.read_csv(file_path)
-    df["Ticker"] = ticker  
-    # Make date from string -> panda Date format
-    df['Date'] = pd.to_datetime(df['Date'])
-    df['Ticker'] = ticker
-    dfs.append(df)
+LOCAL_TRANSACTIONS_PATH = 'data/raw/internal/transactions.csv'
+transactions = pd.read_csv(LOCAL_TRANSACTIONS_PATH, parse_dates=["transaction_date"])
+transactions = transactions.rename(columns={'asset_id': 'Ticker', 'transaction_date': 'Date'})
+print("Loaded internal transactions from local file")
+market_files = ["raw/market/AAPL.csv", "raw/market/MSFT.csv", "raw/market/GOOG.csv", "raw/market/AMZN.csv", "raw/market/SPY.csv"]
 
-# Concat all data frame into one large one
-market_data = pd.concat(dfs)
+market_data_list = []
+for file_path in market_files:
+    blob = bucket.blob(file_path)
+    if not blob.exists():
+        print(f"Warning: {file_path} not found in bucket")
+        continue
+    csv_bytes = blob.download_as_bytes()
+    df = pd.read_csv(io.BytesIO(csv_bytes), parse_dates=["Date"])
+    market_data_list.append(df)
+
+market_data = pd.concat(market_data_list, ignore_index=True)
 for col in ['Close', 'High', 'Low', 'Open', 'Volume']:
     market_data[col] = pd.to_numeric(market_data[col], errors='coerce')
+print("Loaded market data from GCS")
 
-# Rename mock data column to have columns we can join on
-transactions = transactions.rename(columns={'asset_id': 'Ticker', 'transaction_date': 'Date'})
-merged = pd.merge(transactions, market_data, on=['Date', 'Ticker'], how='left')
-# Drop any row where NaN is present in close column
-merged = merged.dropna(subset=['Close'])
+transactions["signed_quantity"] = transactions.apply(
+    lambda row: row["quantity"] if row["transaction_type"].upper() == "BUY" else -row["quantity"], axis=1
+)
 
-merged['signed_quantity'] = merged.apply(lambda row: row['quantity'] if row['transaction_type']=='BUY' else -row['quantity'], axis=1)
+merged = pd.merge(
+    transactions,
+    market_data,
+    on=["Date", "Ticker"],
+    how="left"
+)
 
-# dollar value of each transaction, positive for buys and negative for sells.
-merged['daily_value'] = merged['signed_quantity'] * merged['Close']
+merged.sort_values(["Ticker", "Date"], inplace=True)
+merged["Close"] = merged.groupby("Ticker")["Close"].ffill()
 
-portfolio_daily = merged.groupby(['portfolio_id', 'Date'])['daily_value'].sum().reset_index()
-portfolio_daily = portfolio_daily.sort_values(['portfolio_id', 'Date'])
-portfolio_daily['daily_return'] = portfolio_daily.groupby('portfolio_id')['daily_value'].pct_change()
+merged["daily_value_contrib"] = merged["signed_quantity"] * merged["Close"]
+portfolio_daily = merged.groupby(["portfolio_id", "Date"])["daily_value_contrib"].sum().reset_index()
+portfolio_daily.rename(columns={"daily_value_contrib": "daily_value"}, inplace=True)
 
+portfolio_daily["daily_return"] = portfolio_daily.groupby("portfolio_id")["daily_value"].pct_change()
 
-os.makedirs('data/processed', exist_ok=True)
-portfolio_daily.to_csv('data/processed/portfolio_daily.csv', index=False)
+for portfolio_id, df_portfolio in portfolio_daily.groupby("portfolio_id"):
+    csv_buffer = io.StringIO()
+    df_portfolio.to_csv(csv_buffer, index=False)
+    blob = bucket.blob(f"processed/{portfolio_id}_portfolio.csv")
+    blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
+    print(f"Uploaded processed data for portfolio {portfolio_id} to processed/{portfolio_id}_portfolio.csv")
+
+print("All portfolios processed and uploaded successfully!")
