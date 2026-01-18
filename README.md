@@ -4,7 +4,7 @@
 
 This project is an **end-to-end cloud-based data pipeline** that extracts, transforms, and visualizes portfolio-level financial data. It demonstrates how raw market data and internal transaction data can be processed and analyzed using Python, Google Cloud Platform, BigQuery, and Power BI.  
 
-The goal is to **explore how an end-to-end workflow could work**, from raw data to simple graph. Working through this project helped me understand the practical role of cloud services like Google Cloud Storage and BigQuery, from storing raw and processed data to querying analytics-ready datasets efficiently. On the visualization side, building dashboards in Power BI highlighted how transformed data can be made actionable and accessible
+The goal is to **explore how an end-to-end workflow could work**, from raw data to simple graph. Working through this project helped me understand the practical role of cloud services like Google Cloud Storage and BigQuery, from storing raw and processed data to querying analytics-ready datasets efficiently. On the visualization side, building graphs in Power BI.
 
 ---
 
@@ -110,6 +110,7 @@ Yahoo Finance API / Internal CSVs
 ## Notes
 - The pipeline can be **expanded to more portfolios or tickers** by updating the CSV sources and running the ETL scripts.  
 - The Power BI dashboard can be **scheduled for automatic refresh** when connected to BigQuery.
+
 
 
 
